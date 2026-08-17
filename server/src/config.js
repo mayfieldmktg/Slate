@@ -36,7 +36,8 @@ function optional(name, fallback) {
   return process.env[name] || fallback;
 }
 
-export const config = {
+function loadConfig() {
+  return {
   // Railway assigns the port for us at runtime and passes it in as PORT.
   // We must listen on exactly that port or Railway can't route traffic to us.
   port: Number(optional('PORT', 3000)),
@@ -51,7 +52,45 @@ export const config = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
-};
+
+  // Full Postgres connection string from Supabase.
+  // Settings -> Database -> Connection string -> "Session pooler".
+  databaseUrl: required('DATABASE_URL'),
+
+  // Supabase requires an encrypted connection. Node verifies the server's
+  // certificate against its built-in list of trusted authorities, which is
+  // what you want — it proves you're really talking to Supabase and not
+  // something intercepting the connection.
+  //
+  // Some Supabase connection routes present a certificate Node's default
+  // list doesn't cover, which shows up as "self-signed certificate in
+  // certificate chain". Setting DATABASE_SSL_NO_VERIFY=true works around it
+  // by skipping that check. Only reach for it if you hit that exact error:
+  // it keeps the traffic encrypted but stops verifying who is on the other
+  // end, so it is strictly a fallback and not the setting to start with.
+  databaseSsl: {
+    rejectUnauthorized: optional('DATABASE_SSL_NO_VERIFY', 'false') !== 'true',
+  },
+  };
+}
+
+/**
+ * A missing setting is a configuration problem, not a code problem, so we
+ * report it as one: a short readable message and a clean exit, rather than a
+ * stack trace. When this shows up in Railway's log at 7am it should be
+ * immediately obvious what to go and fix.
+ */
+let loaded;
+try {
+  loaded = loadConfig();
+} catch (err) {
+  console.error('\nSlate could not start — configuration problem:\n');
+  console.error(`  ${err.message}\n`);
+  console.error('See server/.env.example for the full list of settings.\n');
+  process.exit(1);
+}
+
+export const config = loaded;
 
 export const isProduction = config.nodeEnv === 'production';
 

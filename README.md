@@ -19,8 +19,8 @@ deploy it separately — either works.
 
 | Phase | What it does | Status |
 | ----- | ------------ | ------ |
-| 1 | Minimal deployed server | **Current** |
-| 2 | Database schema (Supabase) | Not started |
+| 1 | Minimal deployed server | Done — live on Railway |
+| 2 | Database schema (Supabase) | **Current** |
 | 3 | Meta OAuth callback endpoint | Not started |
 | 4 | Manual test publish | Not started |
 | 5 | Scheduling engine | Not started |
@@ -64,7 +64,10 @@ Press `Ctrl+C` to stop it.
 | `server/src/index.js` | Starts the server and handles clean shutdown |
 | `server/src/app.js` | Defines middleware and wires up routes |
 | `server/src/config.js` | Reads settings from environment variables |
-| `server/src/routes/health.js` | The `/health` endpoint |
+| `server/src/routes/health.js` | The `/health` endpoints |
+| `server/src/db/index.js` | Database connection pool and query helpers |
+| `server/src/db/migrate.js` | Applies migration files (`npm run migrate`) |
+| `server/migrations/*.sql` | The database schema, as numbered steps |
 | `server/.env.example` | Template listing every setting (safe to commit) |
 | `server/.env` | Your real settings — **never committed** |
 | `server/railway.json` | Tells Railway how to build and run the server |
@@ -74,8 +77,88 @@ Press `Ctrl+C` to stop it.
 | Method | Path | Response |
 | ------ | ---- | -------- |
 | `GET` | `/` | API name and version |
-| `GET` | `/health` | Status, environment, uptime |
+| `GET` | `/health` | Status, environment, uptime, database connectivity |
+| `GET` | `/health/ready` | `200` if the database is reachable, `503` if not |
 | any | anything else | `404` with a JSON error body |
+
+There are two health endpoints because they answer different questions.
+`/health` asks "is the server alive?" and always returns `200` if it can reply
+at all — this is the one Railway pings. `/health/ready` asks "can it do useful
+work right now?" and returns `503` when the database is unreachable.
+
+Keeping them separate matters: Railway rolls back a deploy that fails its
+healthcheck, so if a brief Supabase outage made `/health` fail, Railway would
+tear down a perfectly healthy server and redeploy it into the same outage.
+Tested by stopping the database mid-request — `/health` stayed `200`,
+`/health/ready` returned `503`, the process stayed up, and it recovered on its
+own when the database came back with no restart needed.
+
+---
+
+## Setting up the database (phase 2)
+
+### 1. Create the Supabase project
+
+At [supabase.com](https://supabase.com), create a project and save the
+database password somewhere safe — it's shown only once.
+
+### 2. Get the connection string
+
+Dashboard → **Settings** → **Database** → **Connection string** → the
+**Session pooler** tab.
+
+Use the session pooler, **not** "Direct connection". The direct connection is
+IPv6-only unless you pay for Supabase's IPv4 add-on, and Railway will fail to
+reach it with a confusing `ENETUNREACH` error. The session pooler works over
+IPv4 and otherwise behaves identically.
+
+Replace `[YOUR-PASSWORD]` with your real password. If it contains symbols like
+`@ : / #`, they must be percent-encoded (`@` → `%40`, `#` → `%23`) or the URL
+will be misread.
+
+### 3. Run the migration
+
+Locally first, so you see any error clearly:
+
+```bash
+cd server
+# add DATABASE_URL=... to server/.env
+npm install
+npm run migrate
+```
+
+You should see:
+
+```
+Applying 001_initial_schema.sql ... done
+Migrations complete.
+```
+
+Running it again is safe — it will say `Database already up to date`.
+
+### 4. Add the variable to Railway
+
+Railway → your service → **Variables** → add `DATABASE_URL` with the same
+value. Deploy. Then check `https://<your-domain>/health` — `database` should
+report `"connected": true`.
+
+> If connecting fails with `self-signed certificate in certificate chain`,
+> set `DATABASE_SSL_NO_VERIFY=true` as well. Try it only for that specific
+> error: it keeps traffic encrypted but stops verifying who's on the other
+> end, so it's a fallback rather than a starting point.
+
+### What the schema looks like
+
+See [`docs/schema.md`](docs/schema.md) for a diagram and a plain-language
+tour of every table. The SQL itself is in `server/migrations/` and is
+commented throughout.
+
+### Changing the schema later
+
+Never edit a migration that has already run — the runner stores a fingerprint
+of each file and refuses to continue if one changes, because the database and
+the file would no longer agree. Instead add a new numbered file
+(`002_...sql`) and run `npm run migrate` again.
 
 ---
 

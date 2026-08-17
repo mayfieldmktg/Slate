@@ -6,6 +6,7 @@
  */
 import { createApp } from './app.js';
 import { config } from './config.js';
+import { closePool } from './db/index.js';
 
 const app = createApp();
 
@@ -32,7 +33,15 @@ const server = app.listen(config.port, '0.0.0.0', () => {
 function shutdown(signal) {
   console.log(`${signal} received — shutting down gracefully.`);
 
-  server.close(() => {
+  server.close(async () => {
+    // Only close the database once in-flight requests have finished — they
+    // may still be mid-query, and pulling the pool out from under them would
+    // turn a clean shutdown into failed requests.
+    try {
+      await closePool();
+    } catch (err) {
+      console.error('Error closing database pool:', err.message);
+    }
     console.log('All connections closed. Goodbye.');
     process.exit(0);
   });
